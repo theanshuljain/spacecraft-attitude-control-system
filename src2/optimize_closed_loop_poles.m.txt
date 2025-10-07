@@ -1,0 +1,58 @@
+function x_opt = optimize_closed_loop_poles(A, B, C)
+    % Initial guess
+    x0 = [-0.5, 5.5, -10, -12];
+
+    % Bounds: Ensure LHP and realistic pole locations
+    lb = [-50, 0.5, -60, -80];
+    ub = [-0.01, 30, -0.05, -0.05];
+
+    options = optimoptions('fmincon', ...
+        'Display', 'iter', ...
+        'Algorithm', 'sqp', ...
+        'MaxFunctionEvaluations', 1000);
+
+    cost = @(x) bandwidth_cost_soft_penalty(x, A, B, C);
+
+    % fmincon call
+    x_opt = fmincon(cost, x0, [], [], [], [], lb, ub, [], options);
+end
+
+function cost = bandwidth_cost_soft_penalty(x, A, B, C)
+    a_real = x(1);
+    a_imag = x(2);
+    p3 = x(3);
+    p4 = x(4);
+
+    desired_poles = [a_real + 1j*a_imag, a_real - 1j*a_imag, p3, p4];
+
+    try
+        % Ensure poles are not too close
+        min_sep = min(abs(diff(sort(real(desired_poles)))));
+        closeness_penalty = 0;
+        if min_sep < 0.05
+            closeness_penalty = 5000 * (0.05 - min_sep)^2;
+        end
+
+        % Pole placement
+        K = place(A, B, desired_poles);
+        Acl = A - B*K;
+
+        % Tracking gain
+        F = pinv(C * (-Acl \ B));
+
+        % Closed-loop TF
+        sys_cl = ss(Acl, B*F, C, 0);
+
+        % Actual bandwidth
+        bw = bandwidth(sys_cl, -3.05);
+
+        % Soft penalty if bandwidth < 6.28 rad/s (1 Hz)
+        penalty = 5000 * max(0, 6.28 - bw)^2;
+
+        % Final cost (we minimize negative bandwidth + penalties)
+        cost = -bw + penalty + closeness_penalty;
+
+    catch
+        cost = 1e6;  % unplaceable or unstable
+    end
+end
